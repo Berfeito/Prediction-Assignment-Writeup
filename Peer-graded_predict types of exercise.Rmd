@@ -1,0 +1,149 @@
+---
+title: "Peer-graded: Prediction exercise"
+author: "Berfeito"
+date: "2023-03-22"
+output:
+  html_document:
+    code_folding: hide
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE,
+                      error = FALSE, message = FALSE)
+```
+
+# Peer-graded exercise: Using machine learning to predict different ways exercises are done from accelerometer data.
+
+The goal of the project is to predict different ways exercises are done by a study participants based on data collected from wearable fitness tracker accelerometers. This report will describe (1) how the model was built, (2) how cross validation was used, (3) what the expected out of sample error is, and (4) the reason behind the analysis. The machine learning models to be used are Decision Tree (rpart) and Random Forests
+(rf). The predicted values will be applied to the testing data set and submitted. The
+data used in this project is available at this [link](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har)
+
+```{r}
+# Loading the Training and Testing datasets
+
+trainingURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+trainDATA <- read.csv(trainingURL)
+
+testURL <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+testDATA <- read.csv(testURL)
+```
+
+```{r}
+# Installing libraries
+
+library(tidyverse)
+library(caret)
+library(rattle)
+```
+
+# Prediction procedure
+
+The outcome variable is 'classe'. It is a factor variable with 5 levels (A
+through B) and it codifies the information describing the way in which
+participants in a study were asked to conduct an exercise:
+
+* Class A: exactly according to the specification; 
+* Class B: throwing the elbows to the front; 
+* Class C: lifting the dumbbell only halfway; 
+* Class D:lowering the dumbbell only halfway; 
+* Class E: throwing the hips to the front.
+
+```{r}
+plot(as.factor(trainDATA$classe), col="blue",
+     main="Total entries by each group in 'classe'",
+     xlab="classe", ylab="Frequency")
+```
+
+**Classe A** corresponds to the correct execution of the exercise, while the other 4
+correspond to common incorrect execution of the same exercise. The plot shows that **classe A** is the most frequent entry in the training data, however the difference is not expected to skew the model. 
+
+# Inspecting and cleaning the data before analysis
+
+```{r}
+# Counting and removing NA's
+
+trainDATA <- trainDATA[,colSums(is.na(trainDATA)) == 0]
+testDATA <- testDATA[,colSums(is.na(testDATA)) == 0]
+```
+```{r}
+# Removing variables with no bearing to the prediction model: user_name,
+# raw_timestamp_part_1, raw_timestamp_part_,2 cvtd_timestamp, new_window, and
+# num_window (columns 1 to 7). 
+
+trainDATA <- trainDATA[,-c(1:7)]
+testDATA <- testDATA[,-c(1:7)]
+```
+
+```{r}
+# Removing variables that are not in the test data or that are meaningless for
+# the model, and transforming the outcome variable into a factor.
+
+trainDATA <- trainDATA %>%
+        select(-contains(c("kurtosis_","skewness_","max_","min_",
+                          "amplitude_","avg_","stddev_","var_"))) %>%
+        mutate(classe = factor(classe))
+
+# Adding an empty column called "classe" in which the predictions will be added at the end.
+
+testDATA <- testDATA %>% add_column(classe = NA)
+```
+
+# Preparing the data for Cross-validation
+
+The cross-validation method chosen is the holdout. Only the training data will be partition into 75% for training and 25% for validation.
+
+```{r}
+# Partitioning the training data
+
+set.seed(1102)
+inTrain <- createDataPartition(y = trainDATA$classe, p = 0.75, list = FALSE)
+training <- trainDATA[inTrain,]
+validation <- trainDATA[-inTrain,]
+```
+
+# Fitting different models
+
+## Recursive Partitioning and Regression Trees
+
+```{r}
+train_rpart <- train(classe ~ ., data = training, method="rpart")
+fancyRpartPlot(train_rpart$finalModel)
+pred_rpart <- predict(train_rpart, validation)
+confusionMatrix(pred_rpart, validation$classe)
+accuracy_rpart <- confusionMatrix(pred_rpart, validation$classe)$overall[[1]]
+```
+
+The accuracy of the first method is `r accuracy_rpart` which is very low. This means an error rate of `r 1-accuracy_rpart`.  
+
+## Random forest
+#### (Note: code includes parallel processing due to high processing needs of rf)
+
+```{r}
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+fitControl <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+train_rf <- train(classe ~., data = training, method ="rf",
+                  trControl = fitControl)
+pred_rf <- predict(train_rf, validation)
+confusionMatrix(pred_rf, validation$classe)
+stopCluster(cluster)
+registerDoSEQ()
+accuracy_rf <- confusionMatrix(pred_rf, validation$classe)$overall[[1]]
+```
+
+## Model comparison
+
+The Randon Forest (rf) model is the most accurate. It has an accuracy of `r accuracy_rf`. Its expected out-of-sample error is `r 1 - accuracy_rf`, meaning that this algorithm will be able to predict the classes in the testing data with very high precision.
+
+# Applying the most accurate model to the testing data
+
+The table below shows the prediction of classes based on the data available in the testing dataset. It shows the problem number on the left column and the predicted class on the right one.
+
+```{r}
+predFinal <- predict(train_rf, testDATA)
+testDATA %>% mutate(classe = predFinal) %>%
+        reframe(problem_id, classe) %>%
+        print()
+```
